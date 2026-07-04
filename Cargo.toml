@@ -1,0 +1,78 @@
+[package]
+name = "uwu_database"
+version = "0.1.0"
+edition = "2024"
+description = "Unified database layer: SQL (PG/MySQL/SQLite) + Cache (memory/Redis) with multi-tenant and edition (community/enterprise) support"
+
+[dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+async-trait = "0.1"
+thiserror = "1"
+tracing = "0.1"
+
+# SQL
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio-rustls", "macros", "chrono", "uuid"] }
+
+# Cache - memory
+moka = { version = "0.12", optional = true, features = ["future"] }
+parking_lot = { version = "0.12", optional = true }
+
+# Single-flight for cache_aside
+async-once-cell = { version = "0.5", optional = true }
+
+# Vector compute
+wide = { version = "0.7", optional = true }
+rayon = { version = "1.10", optional = true }
+
+# Cache - redis
+deadpool-redis = { version = "0.18", optional = true }
+redis = { version = "0.27", optional = true, default-features = false, features = ["tokio-comp", "connection-manager"] }
+
+# Vector backends
+qdrant-client = { version = "1.13", optional = true, default-features = false, features = ["serde"] }
+qdrant-edge = { version = "0.7", optional = true, default-features = false }
+lancedb = { version = "0.30", optional = true, default-features = false }
+arrow-array = { version = "55", optional = true }
+arrow-schema = { version = "55", optional = true }
+futures = { version = "0.3", optional = true }
+
+[features]
+default = ["postgres", "cache-memory", "community"]
+
+# SQL backends
+postgres = ["sqlx/postgres"]
+mysql    = ["sqlx/mysql"]
+sqlite   = ["sqlx/sqlite"]
+
+# Cache backends
+cache-memory = ["dep:moka"]
+cache-redis  = ["dep:deadpool-redis", "dep:redis"]
+
+# Single-flight cache_aside
+single-flight = ["dep:async-once-cell"]
+
+# Vector backends
+vector-memory        = ["dep:parking_lot"]
+vector-pgvector      = ["postgres"]
+vector-qdrant        = ["dep:qdrant-client"]
+vector-qdrant-edge   = ["dep:qdrant-edge"]
+vector-lancedb       = ["dep:lancedb", "dep:arrow-array", "dep:arrow-schema", "dep:futures"]
+
+# Vector compute optimizations
+vector-simd     = ["dep:wide"]
+vector-parallel = ["dep:rayon"]
+
+# Editions (mutually exclusive at deploy time, but both compilable)
+community  = []
+enterprise = ["multi-tenant", "audit-log"]
+
+# Enterprise sub-features
+multi-tenant = []
+audit-log    = []
+
+
+[dev-dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "test-util"] }
+uuid = { version = "1", features = ["v4"] }
