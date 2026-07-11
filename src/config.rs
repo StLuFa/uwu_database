@@ -67,17 +67,35 @@ pub struct DbConfig {
     pub application_name: Option<String>,
 }
 
-fn default_max_conn() -> u32 { 10 }
-fn default_min_conn() -> u32 { 0 }
-fn default_acquire_secs() -> u64 { 5 }
-fn default_idle_secs() -> u64 { 600 }
-fn default_max_lifetime_secs() -> u64 { 1800 }
-fn default_stmt_cache() -> usize { 100 }
+fn default_max_conn() -> u32 {
+    10
+}
+fn default_min_conn() -> u32 {
+    0
+}
+fn default_acquire_secs() -> u64 {
+    5
+}
+fn default_idle_secs() -> u64 {
+    600
+}
+fn default_max_lifetime_secs() -> u64 {
+    1800
+}
+fn default_stmt_cache() -> usize {
+    100
+}
 
 impl DbConfig {
-    pub fn acquire_timeout(&self) -> Duration { Duration::from_secs(self.acquire_timeout_secs) }
-    pub fn idle_timeout(&self) -> Duration { Duration::from_secs(self.idle_timeout_secs) }
-    pub fn max_lifetime(&self) -> Duration { Duration::from_secs(self.max_lifetime_secs) }
+    pub fn acquire_timeout(&self) -> Duration {
+        Duration::from_secs(self.acquire_timeout_secs)
+    }
+    pub fn idle_timeout(&self) -> Duration {
+        Duration::from_secs(self.idle_timeout_secs)
+    }
+    pub fn max_lifetime(&self) -> Duration {
+        Duration::from_secs(self.max_lifetime_secs)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -100,7 +118,9 @@ pub struct CacheConfig {
     pub capacity: usize,
 }
 
-fn default_capacity() -> usize { 10_000 }
+fn default_capacity() -> usize {
+    10_000
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

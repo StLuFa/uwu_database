@@ -10,23 +10,28 @@
 
 use super::*;
 use crate::error::DbError;
-use std::collections::HashMap;
-use std::path::PathBuf;
-use std::sync::Arc;
 use qdrant_edge::{
-    EdgeShard, EdgeConfigBuilder, EdgeVectorParams,
-    UpdateOperation, PointOperations, PointInsertOperations,
-    QueryRequest, ScoringQuery, QueryEnum,
-    PointId, PointStruct, Vectors, Vector,
-    VectorInternal,
-    Filter, Condition, FieldCondition, Match as EdgeMatch, MatchValue, ValueVariants,
-    JsonPath,
-    WithPayloadInterface, WithVector,
-    NamedQuery,
-    DEFAULT_VECTOR_NAME,
+    Condition, DEFAULT_VECTOR_NAME, EdgeConfigBuilder, EdgeShard, EdgeVectorParams, FieldCondition,
+    Filter, Match as EdgeMatch, MatchValue, NamedQuery, PointId, PointInsertOperations,
+    PointOperations, PointStruct, QueryEnum, QueryRequest, ScoringQuery, UpdateOperation,
+    ValueVariants, Vector, VectorInternal, Vectors, WithPayloadInterface, WithVector,
 };
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 type Metadata = HashMap<String, serde_json::Value>;
+const STATE_FILE: &str = "uwu-vector-state.json";
+
+#[derive(Serialize, Deserialize)]
+struct PersistedShardState {
+    dim: usize,
+    distance: Distance,
+    next_id: u64,
+    id_map: HashMap<String, u64>,
+    meta_cache: HashMap<u64, Metadata>,
+}
 
 struct ShardEntry {
     shard: EdgeShard,
@@ -51,10 +56,52 @@ impl QdrantEdgeVectorStore {
         let base_dir = data_dir.into();
         std::fs::create_dir_all(&base_dir)
             .map_err(|e| DbError::Other(format!("qdrant-edge dir: {e}")))?;
-        Ok(Self { base_dir, shards: Default::default() })
+        Ok(Self {
+            base_dir,
+            shards: Default::default(),
+        })
     }
 
-    fn coll_dir(&self, name: &str) -> PathBuf { self.base_dir.join(name) }
+    fn coll_dir(&self, name: &str) -> PathBuf {
+        self.base_dir.join(name)
+    }
+
+    fn state_path(dir: &Path) -> PathBuf {
+        dir.join(STATE_FILE)
+    }
+
+    fn load_state(dir: &Path) -> Result<Option<PersistedShardState>> {
+        let path = Self::state_path(dir);
+        if !path.exists() {
+            return Ok(None);
+        }
+        let bytes = std::fs::read(&path).map_err(|e| {
+            DbError::Other(format!("read qdrant-edge state {}: {e}", path.display()))
+        })?;
+        serde_json::from_slice(&bytes)
+            .map(Some)
+            .map_err(|e| DbError::Other(format!("parse qdrant-edge state {}: {e}", path.display())))
+    }
+
+    fn persist_state(dir: &Path, entry: &ShardEntry) -> Result<()> {
+        let state = PersistedShardState {
+            dim: entry.dim,
+            distance: entry.distance,
+            next_id: entry.next_id,
+            id_map: entry.id_map.clone(),
+            meta_cache: entry.meta_cache.clone(),
+        };
+        let bytes = serde_json::to_vec(&state)
+            .map_err(|e| DbError::Other(format!("serialize qdrant-edge state: {e}")))?;
+        let path = Self::state_path(dir);
+        let temp = dir.join(format!("{STATE_FILE}.tmp"));
+        std::fs::write(&temp, bytes).map_err(|e| {
+            DbError::Other(format!("write qdrant-edge state {}: {e}", temp.display()))
+        })?;
+        std::fs::rename(&temp, &path).map_err(|e| {
+            DbError::Other(format!("replace qdrant-edge state {}: {e}", path.display()))
+        })
+    }
 
     /// 仅查找已有 shard，不自动创建。
     fn get(&self, name: &str) -> Option<Arc<std::sync::Mutex<ShardEntry>>> {
@@ -63,7 +110,10 @@ impl QdrantEdgeVectorStore {
 
     /// 查找或创建 shard（用于 ensure_collection）。
     fn get_or_create(
-        &self, name: &str, dim: usize, distance: Distance,
+        &self,
+        name: &str,
+        dim: usize,
+        distance: Distance,
     ) -> Result<Arc<std::sync::Mutex<ShardEntry>>> {
         if let Some(s) = self.get(name) {
             let entry = s.lock().unwrap();
@@ -86,13 +136,29 @@ impl QdrantEdgeVectorStore {
         std::fs::create_dir_all(&dir)
             .map_err(|e| DbError::Other(format!("qdrant-edge mkdir: {e}")))?;
 
+        let persisted = Self::load_state(&dir)?;
+        if let Some(state) = &persisted {
+            if state.dim != dim || state.distance != distance {
+                return Err(DbError::Other(format!(
+                    "collection `{name}` persisted with dim={} distance={:?}, requested dim={dim} distance={distance:?}",
+                    state.dim, state.distance
+                )));
+            }
+        }
         let edge_dist = to_edge_distance(distance);
         let config = EdgeConfigBuilder::new()
-            .vector(DEFAULT_VECTOR_NAME, EdgeVectorParams {
-                size: dim, distance: edge_dist,
-                on_disk: Some(false), multivector_config: None,
-                datatype: None, quantization_config: None, hnsw_config: None,
-            })
+            .vector(
+                DEFAULT_VECTOR_NAME,
+                EdgeVectorParams {
+                    size: dim,
+                    distance: edge_dist,
+                    on_disk: Some(false),
+                    multivector_config: None,
+                    datatype: None,
+                    quantization_config: None,
+                    hnsw_config: None,
+                },
+            )
             .build();
 
         let shard = if dir.join("segments").exists() {
@@ -102,10 +168,21 @@ impl QdrantEdgeVectorStore {
         }
         .map_err(|e| DbError::Other(format!("qdrant-edge {name}: {e}")))?;
 
+        let (next_id, id_map, meta_cache) = persisted
+            .map(|state| (state.next_id, state.id_map, state.meta_cache))
+            .unwrap_or_else(|| (1, HashMap::new(), HashMap::new()));
+        let rev_map = id_map
+            .iter()
+            .map(|(id, point)| (*point, id.clone()))
+            .collect();
         let entry = Arc::new(std::sync::Mutex::new(ShardEntry {
-            shard, dim, distance, next_id: 1,
-            id_map: HashMap::new(), rev_map: HashMap::new(),
-            meta_cache: HashMap::new(),
+            shard,
+            dim,
+            distance,
+            next_id,
+            id_map,
+            rev_map,
+            meta_cache,
         }));
         w.insert(name.to_string(), entry.clone());
         Ok(entry)
@@ -144,7 +221,11 @@ fn assign_id(entry: &mut ShardEntry, str_id: &str, metadata: &Metadata) -> u64 {
 }
 
 fn lookup_id(entry: &ShardEntry, num_id: u64) -> String {
-    entry.rev_map.get(&num_id).cloned().unwrap_or_else(|| num_id.to_string())
+    entry
+        .rev_map
+        .get(&num_id)
+        .cloned()
+        .unwrap_or_else(|| num_id.to_string())
 }
 
 fn lookup_meta(entry: &ShardEntry, num_id: u64) -> Metadata {
@@ -158,36 +239,60 @@ fn record_to_point(entry: &mut ShardEntry, r: &Record) -> PointStruct {
     let payload: serde_json::Value = if r.metadata.is_empty() {
         serde_json::Value::Object(Default::default())
     } else {
-        serde_json::Value::Object(r.metadata.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
+        serde_json::Value::Object(
+            r.metadata
+                .iter()
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect(),
+        )
     };
-    let vectors = Vectors::new_named(vec![(DEFAULT_VECTOR_NAME, Vector::new_dense(r.vector.clone()))]);
+    let vectors = Vectors::new_named(vec![(
+        DEFAULT_VECTOR_NAME,
+        Vector::new_dense(r.vector.clone()),
+    )]);
     PointStruct::new(num_id, vectors, payload)
 }
 
 // ── Filter ────────────────────────────────────────────
 
 fn build_filter(f: &HashMap<String, serde_json::Value>) -> Option<Filter> {
-    let conditions: Vec<Condition> = f.iter().filter_map(|(k, v)| {
-        let mv = match v {
-            serde_json::Value::String(s) => MatchValue { value: ValueVariants::String(s.clone()) },
-            serde_json::Value::Bool(b) => MatchValue { value: ValueVariants::Bool(*b) },
-            serde_json::Value::Number(n) if n.is_i64() =>
-                MatchValue { value: ValueVariants::Integer(n.as_i64().unwrap()) },
-            _ => return None,
-        };
-        Some(Condition::Field(FieldCondition {
-            key: k.as_str().parse().expect("valid json path"),
-            r#match: Some(EdgeMatch::Value(mv)),
-            range: None, geo_bounding_box: None, geo_radius: None,
-            values_count: None, geo_polygon: None,
-            is_empty: None, is_null: None,
-        }))
-    }).collect();
+    let conditions: Vec<Condition> = f
+        .iter()
+        .filter_map(|(k, v)| {
+            let mv = match v {
+                serde_json::Value::String(s) => MatchValue {
+                    value: ValueVariants::String(s.clone()),
+                },
+                serde_json::Value::Bool(b) => MatchValue {
+                    value: ValueVariants::Bool(*b),
+                },
+                serde_json::Value::Number(n) if n.is_i64() => MatchValue {
+                    value: ValueVariants::Integer(n.as_i64().unwrap()),
+                },
+                _ => return None,
+            };
+            Some(Condition::Field(FieldCondition {
+                key: k.as_str().parse().expect("valid json path"),
+                r#match: Some(EdgeMatch::Value(mv)),
+                range: None,
+                geo_bounding_box: None,
+                geo_radius: None,
+                values_count: None,
+                geo_polygon: None,
+                is_empty: None,
+                is_null: None,
+            }))
+        })
+        .collect();
 
-    if conditions.is_empty() { None }
-    else {
+    if conditions.is_empty() {
+        None
+    } else {
         Some(Filter {
-            should: None, must: Some(conditions), must_not: None, min_should: None,
+            should: None,
+            must: Some(conditions),
+            must_not: None,
+            min_should: None,
         })
     }
 }
@@ -209,7 +314,9 @@ impl VectorStore for QdrantEdgeVectorStore {
     }
 
     async fn upsert(&self, collection: &str, records: &[Record]) -> Result<()> {
-        if records.is_empty() { return Ok(()); }
+        if records.is_empty() {
+            return Ok(());
+        }
 
         let dim = records[0].vector.len();
 
@@ -219,7 +326,8 @@ impl VectorStore for QdrantEdgeVectorStore {
                 let entry = s.lock().unwrap();
                 if entry.dim != dim {
                     return Err(DbError::Other(format!(
-                        "dim mismatch: `{collection}` has dim={}, got {dim}", entry.dim,
+                        "dim mismatch: `{collection}` has dim={}, got {dim}",
+                        entry.dim,
                     )));
                 }
                 drop(entry);
@@ -229,36 +337,46 @@ impl VectorStore for QdrantEdgeVectorStore {
         };
 
         let mut entry = s.lock().unwrap();
-        let points: Vec<_> = records.iter()
+        let points: Vec<_> = records
+            .iter()
             .map(|r| record_to_point(&mut entry, r).into())
             .collect();
 
-        entry.shard.update(
-            UpdateOperation::PointOperation(
+        entry
+            .shard
+            .update(UpdateOperation::PointOperation(
                 PointOperations::UpsertPoints(PointInsertOperations::PointsList(points)),
-            ),
-        ).map_err(|e| DbError::Other(format!("qdrant-edge upsert: {e}")))?;
+            ))
+            .map_err(|e| DbError::Other(format!("qdrant-edge upsert: {e}")))?;
 
         entry.shard.flush();
-        Ok(())
+        Self::persist_state(&self.coll_dir(collection), &entry)
     }
 
     async fn delete(&self, collection: &str, ids: &[String]) -> Result<()> {
-        if ids.is_empty() { return Ok(()); }
+        if ids.is_empty() {
+            return Ok(());
+        }
 
-        let Some(s) = self.get(collection) else { return Ok(()) };
+        let Some(s) = self.get(collection) else {
+            return Ok(());
+        };
         let mut entry = s.lock().unwrap();
 
-        let point_ids: Vec<PointId> = ids.iter()
+        let point_ids: Vec<PointId> = ids
+            .iter()
             .filter_map(|id| entry.id_map.get(id).copied().map(PointId::NumId))
             .collect();
-        if point_ids.is_empty() { return Ok(()); }
+        if point_ids.is_empty() {
+            return Ok(());
+        }
 
-        entry.shard.update(
-            UpdateOperation::PointOperation(
+        entry
+            .shard
+            .update(UpdateOperation::PointOperation(
                 PointOperations::DeletePoints { ids: point_ids },
-            ),
-        ).map_err(|e| DbError::Other(format!("qdrant-edge delete: {e}")))?;
+            ))
+            .map_err(|e| DbError::Other(format!("qdrant-edge delete: {e}")))?;
 
         // 清理映射
         for id in ids {
@@ -268,12 +386,15 @@ impl VectorStore for QdrantEdgeVectorStore {
                 entry.meta_cache.remove(&n);
             }
         }
-        Ok(())
+        entry.shard.flush();
+        Self::persist_state(&self.coll_dir(collection), &entry)
     }
 
     async fn search(&self, collection: &str, query: Query<'_>) -> Result<Vec<Match>> {
         let Some(s) = self.get(collection) else {
-            return Err(DbError::Other(format!("collection `{collection}` not found")));
+            return Err(DbError::Other(format!(
+                "collection `{collection}` not found"
+            )));
         };
         let entry = s.lock().unwrap();
 
@@ -286,13 +407,18 @@ impl VectorStore for QdrantEdgeVectorStore {
                 query: qvec,
                 using: Some(DEFAULT_VECTOR_NAME.to_string()),
             }))),
-            filter, score_threshold: None,
-            limit: query.top_k, offset: 0, params: None,
+            filter,
+            score_threshold: None,
+            limit: query.top_k,
+            offset: 0,
+            params: None,
             with_payload: WithPayloadInterface::Bool(false), // 不需要 segment payload
             with_vector: WithVector::Bool(false),
         };
 
-        let results = entry.shard.query(req)
+        let results = entry
+            .shard
+            .query(req)
             .map_err(|e| DbError::Other(format!("qdrant-edge query: {e}")))?;
 
         let dist_fn: fn(f32) -> f32 = match entry.distance {
@@ -301,22 +427,27 @@ impl VectorStore for QdrantEdgeVectorStore {
             Distance::Dot => |d| d,
         };
 
-        let matches: Vec<Match> = results.into_iter().map(|sp| {
-            let num_id = match sp.id {
-                PointId::NumId(n) => n,
-                _ => 0,
-            };
-            Match {
-                id: lookup_id(&entry, num_id),
-                score: dist_fn(sp.score),
-                metadata: lookup_meta(&entry, num_id),
-            }
-        }).collect();
+        let matches: Vec<Match> = results
+            .into_iter()
+            .map(|sp| {
+                let num_id = match sp.id {
+                    PointId::NumId(n) => n,
+                    _ => 0,
+                };
+                Match {
+                    id: lookup_id(&entry, num_id),
+                    score: dist_fn(sp.score),
+                    metadata: lookup_meta(&entry, num_id),
+                }
+            })
+            .collect();
 
         Ok(matches)
     }
 
-    fn backend_name(&self) -> &'static str { "qdrant-edge" }
+    fn backend_name(&self) -> &'static str {
+        "qdrant-edge"
+    }
 }
 
 // ===========================================================================
@@ -336,28 +467,62 @@ mod tests {
     }
 
     fn rec(id: &str, v: Vec<f32>) -> Record {
-        Record { id: id.into(), vector: v, metadata: Default::default() }
+        Record {
+            id: id.into(),
+            vector: v,
+            metadata: Default::default(),
+        }
     }
 
     async fn setup(s: &QdrantEdgeVectorStore, name: &str, dim: usize) {
         let _ = s.drop_collection(name).await;
-        s.ensure_collection(CollectionSpec { name, dim, distance: Distance::Cosine }).await.unwrap();
+        s.ensure_collection(CollectionSpec {
+            name,
+            dim,
+            distance: Distance::Cosine,
+        })
+        .await
+        .unwrap();
     }
 
     #[tokio::test]
     async fn test_ensure_and_drop() {
         let s = store();
-        s.ensure_collection(CollectionSpec { name: "c1", dim: 3, distance: Distance::Cosine }).await.unwrap();
+        s.ensure_collection(CollectionSpec {
+            name: "c1",
+            dim: 3,
+            distance: Distance::Cosine,
+        })
+        .await
+        .unwrap();
         // 幂等
-        s.ensure_collection(CollectionSpec { name: "c1", dim: 3, distance: Distance::Cosine }).await.unwrap();
+        s.ensure_collection(CollectionSpec {
+            name: "c1",
+            dim: 3,
+            distance: Distance::Cosine,
+        })
+        .await
+        .unwrap();
         s.drop_collection("c1").await.unwrap();
     }
 
     #[tokio::test]
     async fn test_dimension_mismatch_rejected() {
         let s = store();
-        s.ensure_collection(CollectionSpec { name: "dm", dim: 3, distance: Distance::Cosine }).await.unwrap();
-        let r = s.ensure_collection(CollectionSpec { name: "dm", dim: 5, distance: Distance::Cosine }).await;
+        s.ensure_collection(CollectionSpec {
+            name: "dm",
+            dim: 3,
+            distance: Distance::Cosine,
+        })
+        .await
+        .unwrap();
+        let r = s
+            .ensure_collection(CollectionSpec {
+                name: "dm",
+                dim: 5,
+                distance: Distance::Cosine,
+            })
+            .await;
         assert!(r.is_err(), "dimension mismatch should be rejected");
     }
 
@@ -365,15 +530,40 @@ mod tests {
     async fn test_upsert_and_search() {
         let s = store();
         setup(&s, "cs", 3).await;
-        s.upsert("cs", &[
-            Record { id: "a".into(), vector: vec![1.0, 0.0, 0.0], metadata: Default::default() },
-            Record { id: "b".into(), vector: vec![0.0, 1.0, 0.0], metadata: Default::default() },
-            Record { id: "c".into(), vector: vec![1.0, 1.0, 0.0], metadata: Default::default() },
-        ]).await.unwrap();
+        s.upsert(
+            "cs",
+            &[
+                Record {
+                    id: "a".into(),
+                    vector: vec![1.0, 0.0, 0.0],
+                    metadata: Default::default(),
+                },
+                Record {
+                    id: "b".into(),
+                    vector: vec![0.0, 1.0, 0.0],
+                    metadata: Default::default(),
+                },
+                Record {
+                    id: "c".into(),
+                    vector: vec![1.0, 1.0, 0.0],
+                    metadata: Default::default(),
+                },
+            ],
+        )
+        .await
+        .unwrap();
 
-        let hits = s.search("cs", Query {
-            vector: &[1.0, 0.0, 0.0], top_k: 2, filter: None,
-        }).await.unwrap();
+        let hits = s
+            .search(
+                "cs",
+                Query {
+                    vector: &[1.0, 0.0, 0.0],
+                    top_k: 2,
+                    filter: None,
+                },
+            )
+            .await
+            .unwrap();
         assert_eq!(hits.len(), 2);
         assert_eq!(hits[0].id, "a");
         s.drop_collection("cs").await.unwrap();
@@ -387,16 +577,34 @@ mod tests {
         let mut meta = HashMap::new();
         meta.insert("v".into(), serde_json::json!(42));
         meta.insert("label".into(), serde_json::json!("hello"));
-        s.upsert("meta", &[Record {
-            id: "m1".into(), vector: vec![1.0, 0.0], metadata: meta,
-        }]).await.unwrap();
+        s.upsert(
+            "meta",
+            &[Record {
+                id: "m1".into(),
+                vector: vec![1.0, 0.0],
+                metadata: meta,
+            }],
+        )
+        .await
+        .unwrap();
 
-        let hits = s.search("meta", Query {
-            vector: &[1.0, 0.0], top_k: 1, filter: None,
-        }).await.unwrap();
+        let hits = s
+            .search(
+                "meta",
+                Query {
+                    vector: &[1.0, 0.0],
+                    top_k: 1,
+                    filter: None,
+                },
+            )
+            .await
+            .unwrap();
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].metadata.get("v").and_then(|v| v.as_i64()), Some(42));
-        assert_eq!(hits[0].metadata.get("label").and_then(|v| v.as_str()), Some("hello"));
+        assert_eq!(
+            hits[0].metadata.get("label").and_then(|v| v.as_str()),
+            Some("hello")
+        );
 
         s.drop_collection("meta").await.unwrap();
     }
@@ -408,15 +616,41 @@ mod tests {
 
         let mut m1 = HashMap::new();
         m1.insert("v".into(), serde_json::json!(1));
-        s.upsert("updm", &[Record { id: "r1".into(), vector: vec![1.0, 0.0], metadata: m1 }]).await.unwrap();
+        s.upsert(
+            "updm",
+            &[Record {
+                id: "r1".into(),
+                vector: vec![1.0, 0.0],
+                metadata: m1,
+            }],
+        )
+        .await
+        .unwrap();
 
         let mut m2 = HashMap::new();
         m2.insert("v".into(), serde_json::json!(99));
-        s.upsert("updm", &[Record { id: "r1".into(), vector: vec![0.0, 1.0], metadata: m2 }]).await.unwrap();
+        s.upsert(
+            "updm",
+            &[Record {
+                id: "r1".into(),
+                vector: vec![0.0, 1.0],
+                metadata: m2,
+            }],
+        )
+        .await
+        .unwrap();
 
-        let hits = s.search("updm", Query {
-            vector: &[0.0, 1.0], top_k: 1, filter: None,
-        }).await.unwrap();
+        let hits = s
+            .search(
+                "updm",
+                Query {
+                    vector: &[0.0, 1.0],
+                    top_k: 1,
+                    filter: None,
+                },
+            )
+            .await
+            .unwrap();
         assert_eq!(hits[0].metadata.get("v").and_then(|v| v.as_i64()), Some(99));
 
         s.drop_collection("updm").await.unwrap();
@@ -432,16 +666,37 @@ mod tests {
         let mut mb = HashMap::new();
         mb.insert("tag".into(), serde_json::json!("skip"));
 
-        s.upsert("filt", &[
-            Record { id: "keep".into(), vector: vec![1.0, 0.0], metadata: ma },
-            Record { id: "skip".into(), vector: vec![0.99, 0.01], metadata: mb },
-        ]).await.unwrap();
+        s.upsert(
+            "filt",
+            &[
+                Record {
+                    id: "keep".into(),
+                    vector: vec![1.0, 0.0],
+                    metadata: ma,
+                },
+                Record {
+                    id: "skip".into(),
+                    vector: vec![0.99, 0.01],
+                    metadata: mb,
+                },
+            ],
+        )
+        .await
+        .unwrap();
 
         let mut filter = HashMap::new();
         filter.insert("tag".into(), serde_json::json!("keep"));
-        let hits = s.search("filt", Query {
-            vector: &[1.0, 0.0], top_k: 5, filter: Some(&filter),
-        }).await.unwrap();
+        let hits = s
+            .search(
+                "filt",
+                Query {
+                    vector: &[1.0, 0.0],
+                    top_k: 5,
+                    filter: Some(&filter),
+                },
+            )
+            .await
+            .unwrap();
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].id, "keep");
         s.drop_collection("filt").await.unwrap();
@@ -451,12 +706,22 @@ mod tests {
     async fn test_delete_records() {
         let s = store();
         setup(&s, "del", 2).await;
-        s.upsert("del", &[rec("a", vec![1.0, 0.0]), rec("b", vec![0.0, 1.0])]).await.unwrap();
+        s.upsert("del", &[rec("a", vec![1.0, 0.0]), rec("b", vec![0.0, 1.0])])
+            .await
+            .unwrap();
         s.delete("del", &["a".into()]).await.unwrap();
 
-        let hits = s.search("del", Query {
-            vector: &[1.0, 0.0], top_k: 5, filter: None,
-        }).await.unwrap();
+        let hits = s
+            .search(
+                "del",
+                Query {
+                    vector: &[1.0, 0.0],
+                    top_k: 5,
+                    filter: None,
+                },
+            )
+            .await
+            .unwrap();
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].id, "b");
         s.drop_collection("del").await.unwrap();
@@ -474,13 +739,35 @@ mod tests {
     async fn test_l2_distance() {
         let s = store();
         let _ = s.drop_collection("l2").await;
-        s.ensure_collection(CollectionSpec { name: "l2", dim: 2, distance: Distance::L2 }).await.unwrap();
-        s.upsert("l2", &[rec("near", vec![0.0, 0.0]), rec("far", vec![10.0, 10.0])]).await.unwrap();
+        s.ensure_collection(CollectionSpec {
+            name: "l2",
+            dim: 2,
+            distance: Distance::L2,
+        })
+        .await
+        .unwrap();
+        s.upsert(
+            "l2",
+            &[rec("near", vec![0.0, 0.0]), rec("far", vec![10.0, 10.0])],
+        )
+        .await
+        .unwrap();
 
-        let hits = s.search("l2", Query {
-            vector: &[0.0, 0.0], top_k: 2, filter: None,
-        }).await.unwrap();
-        assert!(hits[0].score > hits[1].score, "L2: nearer should score higher");
+        let hits = s
+            .search(
+                "l2",
+                Query {
+                    vector: &[0.0, 0.0],
+                    top_k: 2,
+                    filter: None,
+                },
+            )
+            .await
+            .unwrap();
+        assert!(
+            hits[0].score > hits[1].score,
+            "L2: nearer should score higher"
+        );
         s.drop_collection("l2").await.unwrap();
     }
 
@@ -492,25 +779,141 @@ mod tests {
     #[tokio::test]
     async fn test_search_nonexistent_collection_error() {
         let s = store();
-        assert!(s.search("ghost", Query { vector: &[1.0], top_k: 1, filter: None }).await.is_err());
+        assert!(
+            s.search(
+                "ghost",
+                Query {
+                    vector: &[1.0],
+                    top_k: 1,
+                    filter: None
+                }
+            )
+            .await
+            .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn test_state_survives_restart() {
+        let dir = std::env::temp_dir()
+            .join("uwu_edge_restart_test")
+            .join(test_utils::unique_prefix());
+        {
+            let s = QdrantEdgeVectorStore::new(&dir).unwrap();
+            s.ensure_collection(CollectionSpec {
+                name: "restart",
+                dim: 2,
+                distance: Distance::Cosine,
+            })
+            .await
+            .unwrap();
+            let mut metadata = HashMap::new();
+            metadata.insert("label".into(), serde_json::json!("persistent"));
+            s.upsert(
+                "restart",
+                &[Record {
+                    id: "uwu://tenant/agent/a/memory/skill/restart".into(),
+                    vector: vec![1.0, 0.0],
+                    metadata,
+                }],
+            )
+            .await
+            .unwrap();
+        }
+        {
+            let s = QdrantEdgeVectorStore::new(&dir).unwrap();
+            s.ensure_collection(CollectionSpec {
+                name: "restart",
+                dim: 2,
+                distance: Distance::Cosine,
+            })
+            .await
+            .unwrap();
+            let hits = s
+                .search(
+                    "restart",
+                    Query {
+                        vector: &[1.0, 0.0],
+                        top_k: 1,
+                        filter: None,
+                    },
+                )
+                .await
+                .unwrap();
+            assert_eq!(hits[0].id, "uwu://tenant/agent/a/memory/skill/restart");
+            assert_eq!(
+                hits[0].metadata.get("label").and_then(|v| v.as_str()),
+                Some("persistent")
+            );
+            s.delete(
+                "restart",
+                &["uwu://tenant/agent/a/memory/skill/restart".into()],
+            )
+            .await
+            .unwrap();
+        }
+        {
+            let s = QdrantEdgeVectorStore::new(&dir).unwrap();
+            s.ensure_collection(CollectionSpec {
+                name: "restart",
+                dim: 2,
+                distance: Distance::Cosine,
+            })
+            .await
+            .unwrap();
+            assert!(
+                s.search(
+                    "restart",
+                    Query {
+                        vector: &[1.0, 0.0],
+                        top_k: 1,
+                        filter: None,
+                    }
+                )
+                .await
+                .unwrap()
+                .is_empty()
+            );
+            s.drop_collection("restart").await.unwrap();
+        }
     }
 
     #[tokio::test]
     async fn test_id_roundtrip() {
         let s = store();
         setup(&s, "idrt", 2).await;
-        s.upsert("idrt", &[rec("my-custom-id-123", vec![1.0, 0.0])]).await.unwrap();
+        s.upsert("idrt", &[rec("my-custom-id-123", vec![1.0, 0.0])])
+            .await
+            .unwrap();
 
-        let hits = s.search("idrt", Query {
-            vector: &[1.0, 0.0], top_k: 1, filter: None,
-        }).await.unwrap();
+        let hits = s
+            .search(
+                "idrt",
+                Query {
+                    vector: &[1.0, 0.0],
+                    top_k: 1,
+                    filter: None,
+                },
+            )
+            .await
+            .unwrap();
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].id, "my-custom-id-123");
 
-        s.delete("idrt", &["my-custom-id-123".into()]).await.unwrap();
-        let after = s.search("idrt", Query {
-            vector: &[1.0, 0.0], top_k: 1, filter: None,
-        }).await.unwrap();
+        s.delete("idrt", &["my-custom-id-123".into()])
+            .await
+            .unwrap();
+        let after = s
+            .search(
+                "idrt",
+                Query {
+                    vector: &[1.0, 0.0],
+                    top_k: 1,
+                    filter: None,
+                },
+            )
+            .await
+            .unwrap();
         assert!(after.is_empty());
         s.drop_collection("idrt").await.unwrap();
     }

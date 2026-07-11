@@ -14,9 +14,9 @@ impl FeatureKey {
     pub const fn name(self) -> &'static str {
         match self {
             FeatureKey::MultiTenant => "multi_tenant",
-            FeatureKey::AuditLog    => "audit_log",
-            FeatureKey::Sso         => "sso",
-            FeatureKey::Cluster     => "cluster",
+            FeatureKey::AuditLog => "audit_log",
+            FeatureKey::Sso => "sso",
+            FeatureKey::Cluster => "cluster",
         }
     }
 }
@@ -29,22 +29,24 @@ pub struct Features {
 
 impl Features {
     pub fn from_config(cfg: &RuntimeConfig) -> Self {
-        Self { edition: cfg.deploy.edition }
+        Self {
+            edition: cfg.deploy.edition,
+        }
     }
 
-    pub fn edition(&self) -> Edition { self.edition }
+    pub fn edition(&self) -> Edition {
+        self.edition
+    }
 
-    pub fn is_enterprise(&self) -> bool { self.edition == Edition::Enterprise }
+    pub fn is_enterprise(&self) -> bool {
+        self.edition == Edition::Enterprise
+    }
 
     /// 判断是否启用某功能。同时受编译期 feature 与运行时 edition 影响。
     pub fn enabled(&self, key: FeatureKey) -> bool {
         match key {
-            FeatureKey::MultiTenant => {
-                cfg!(feature = "multi-tenant") && self.is_enterprise()
-            }
-            FeatureKey::AuditLog => {
-                cfg!(feature = "audit-log") && self.is_enterprise()
-            }
+            FeatureKey::MultiTenant => cfg!(feature = "multi-tenant") && self.is_enterprise(),
+            FeatureKey::AuditLog => cfg!(feature = "audit-log") && self.is_enterprise(),
             FeatureKey::Sso | FeatureKey::Cluster => self.is_enterprise(),
         }
     }

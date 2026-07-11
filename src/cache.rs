@@ -25,10 +25,18 @@ pub struct NoopCache;
 
 #[async_trait]
 impl Cache for NoopCache {
-    async fn get(&self, _: &str) -> Result<Option<Vec<u8>>> { Ok(None) }
-    async fn set(&self, _: &str, _: &[u8], _: Option<Duration>) -> Result<()> { Ok(()) }
-    async fn del(&self, _: &str) -> Result<()> { Ok(()) }
-    fn backend(&self) -> CacheBackend { CacheBackend::None }
+    async fn get(&self, _: &str) -> Result<Option<Vec<u8>>> {
+        Ok(None)
+    }
+    async fn set(&self, _: &str, _: &[u8], _: Option<Duration>) -> Result<()> {
+        Ok(())
+    }
+    async fn del(&self, _: &str) -> Result<()> {
+        Ok(())
+    }
+    fn backend(&self) -> CacheBackend {
+        CacheBackend::None
+    }
 }
 
 #[cfg(feature = "cache-memory")]
@@ -86,10 +94,15 @@ mod memory {
 
         async fn set(&self, key: &str, value: &[u8], ttl: Option<Duration>) -> Result<()> {
             let expires_at = ttl.map(|d| Instant::now() + d);
-            self.inner.insert(key.to_string(), Entry {
-                data: value.to_vec(),
-                expires_at,
-            }).await;
+            self.inner
+                .insert(
+                    key.to_string(),
+                    Entry {
+                        data: value.to_vec(),
+                        expires_at,
+                    },
+                )
+                .await;
             Ok(())
         }
 
@@ -105,7 +118,9 @@ mod memory {
             Ok(())
         }
 
-        fn backend(&self) -> CacheBackend { CacheBackend::Memory }
+        fn backend(&self) -> CacheBackend {
+            CacheBackend::Memory
+        }
     }
 }
 
@@ -115,12 +130,15 @@ mod redis_impl {
     use deadpool_redis::{Config as RedisConfig, Pool, Runtime};
     use redis::AsyncCommands;
 
-    pub struct RedisCache { pool: Pool }
+    pub struct RedisCache {
+        pool: Pool,
+    }
 
     impl RedisCache {
         pub fn new(url: &str) -> Result<Self> {
             let cfg = RedisConfig::from_url(url);
-            let pool = cfg.create_pool(Some(Runtime::Tokio1))
+            let pool = cfg
+                .create_pool(Some(Runtime::Tokio1))
                 .map_err(DbError::cache)?;
             Ok(Self { pool })
         }
@@ -139,8 +157,10 @@ mod redis_impl {
             match ttl {
                 Some(d) => {
                     let secs = d.as_secs().max(1);
-                    let _: () = conn.set_ex(key, value, secs)
-                        .await.map_err(DbError::cache)?;
+                    let _: () = conn
+                        .set_ex(key, value, secs)
+                        .await
+                        .map_err(DbError::cache)?;
                 }
                 None => {
                     let _: () = conn.set(key, value).await.map_err(DbError::cache)?;
@@ -156,13 +176,17 @@ mod redis_impl {
         }
 
         async fn del_many(&self, keys: &[String]) -> Result<()> {
-            if keys.is_empty() { return Ok(()); }
+            if keys.is_empty() {
+                return Ok(());
+            }
             let mut conn = self.pool.get().await.map_err(DbError::cache)?;
             let _: () = conn.del(keys).await.map_err(DbError::cache)?;
             Ok(())
         }
 
-        fn backend(&self) -> CacheBackend { CacheBackend::Redis }
+        fn backend(&self) -> CacheBackend {
+            CacheBackend::Redis
+        }
     }
 }
 
@@ -172,19 +196,27 @@ pub async fn build_cache(cfg: &CacheConfig) -> Result<Arc<dyn Cache>> {
         CacheBackend::None => Ok(Arc::new(NoopCache)),
         CacheBackend::Memory => {
             #[cfg(feature = "cache-memory")]
-            { Ok(Arc::new(memory::MemoryCache::new(cfg.capacity))) }
+            {
+                Ok(Arc::new(memory::MemoryCache::new(cfg.capacity)))
+            }
             #[cfg(not(feature = "cache-memory"))]
-            { Err(DbError::Unsupported("cache-memory feature disabled".into())) }
+            {
+                Err(DbError::Unsupported("cache-memory feature disabled".into()))
+            }
         }
         CacheBackend::Redis => {
             #[cfg(feature = "cache-redis")]
             {
-                let url = cfg.url.as_deref().ok_or_else(||
-                    DbError::Config("redis url is required".into()))?;
+                let url = cfg
+                    .url
+                    .as_deref()
+                    .ok_or_else(|| DbError::Config("redis url is required".into()))?;
                 Ok(Arc::new(redis_impl::RedisCache::new(url)?))
             }
             #[cfg(not(feature = "cache-redis"))]
-            { Err(DbError::Unsupported("cache-redis feature disabled".into())) }
+            {
+                Err(DbError::Unsupported("cache-redis feature disabled".into()))
+            }
         }
     }
 }

@@ -15,7 +15,6 @@
 //! migrator.up(&db.pool).await?;
 //! ```
 
-
 use std::collections::BTreeMap;
 use std::path::Path;
 
@@ -41,9 +40,7 @@ macro_rules! embedded_sql {
         $crate::migrate::SqlMigration::new($version, $name, $up, $down)
     };
     ($version:expr, $name:expr, $up:expr) => {
-        $crate::migrate::SqlMigration::new(
-            $version, $name, $up, ::core::option::Option::None
-        )
+        $crate::migrate::SqlMigration::new($version, $name, $up, ::core::option::Option::None)
     };
 }
 
@@ -125,8 +122,12 @@ impl SqlMigration {
 
 #[async_trait]
 impl Migration for SqlMigration {
-    fn version(&self) -> i64 { self.version }
-    fn name(&self) -> &str { &self.name }
+    fn version(&self) -> i64 {
+        self.version
+    }
+    fn name(&self) -> &str {
+        &self.name
+    }
     async fn up(&self, pool: &DbPool) -> Result<()> {
         pool.exec(&self.up_sql).await
     }
@@ -179,20 +180,19 @@ impl Migrator {
         let dir = path.as_ref();
         if !dir.is_dir() {
             return Err(crate::error::DbError::Migrate(format!(
-                "migrations directory not found: {}", dir.display()
+                "migrations directory not found: {}",
+                dir.display()
             )));
         }
 
         let mut migrator = Self::new();
         let mut seen: BTreeMap<i64, String> = BTreeMap::new();
 
-        let entries = std::fs::read_dir(dir).map_err(|e| {
-            crate::error::DbError::Migrate(format!("read migrations dir: {e}"))
-        })?;
+        let entries = std::fs::read_dir(dir)
+            .map_err(|e| crate::error::DbError::Migrate(format!("read migrations dir: {e}")))?;
         for entry in entries {
-            let entry = entry.map_err(|e| {
-                crate::error::DbError::Migrate(format!("read dir entry: {e}"))
-            })?;
+            let entry = entry
+                .map_err(|e| crate::error::DbError::Migrate(format!("read dir entry: {e}")))?;
             let fname = entry.file_name().to_string_lossy().to_string();
             if let Some((version, name)) = parse_filename(&fname) {
                 seen.insert(version, name);
@@ -202,16 +202,16 @@ impl Migrator {
         for (version, name) in seen {
             let up_path = dir.join(format!("{version:04}_{name}.up.sql"));
             let down_path = dir.join(format!("{version:04}_{name}.down.sql"));
-            let down_sql = if down_path.exists() {
-                Some(std::fs::read_to_string(&down_path).map_err(|e| {
-                    crate::error::DbError::Migrate(format!("read down.sql: {e}"))
-                })?)
-            } else {
-                None
-            };
-            let up_sql = std::fs::read_to_string(&up_path).map_err(|e| {
-                crate::error::DbError::Migrate(format!("read up.sql: {e}"))
-            })?;
+            let down_sql =
+                if down_path.exists() {
+                    Some(std::fs::read_to_string(&down_path).map_err(|e| {
+                        crate::error::DbError::Migrate(format!("read down.sql: {e}"))
+                    })?)
+                } else {
+                    None
+                };
+            let up_sql = std::fs::read_to_string(&up_path)
+                .map_err(|e| crate::error::DbError::Migrate(format!("read up.sql: {e}")))?;
             migrator = migrator.add(SqlMigration {
                 version,
                 name,
@@ -241,15 +241,19 @@ impl Migrator {
         let applied_set: std::collections::HashSet<i64> =
             applied.iter().map(|(v, _, _)| *v).collect();
 
-        Ok(self.migrations.iter().map(|(v, m)| {
-            let applied_info = applied.iter().find(|(av, _, _)| av == v);
-            MigrationRecord {
-                version: *v,
-                name: m.name().to_string(),
-                applied_at: applied_info.map(|(_, _, t)| t.clone()),
-                pending: !applied_set.contains(v),
-            }
-        }).collect())
+        Ok(self
+            .migrations
+            .iter()
+            .map(|(v, m)| {
+                let applied_info = applied.iter().find(|(av, _, _)| av == v);
+                MigrationRecord {
+                    version: *v,
+                    name: m.name().to_string(),
+                    applied_at: applied_info.map(|(_, _, t)| t.clone()),
+                    pending: !applied_set.contains(v),
+                }
+            })
+            .collect())
     }
 
     pub async fn up(&self, pool: &DbPool) -> Result<()> {
@@ -265,8 +269,12 @@ impl Migrator {
         let target = target.unwrap_or(i64::MAX);
 
         for (v, m) in &self.migrations {
-            if *v > target { break; }
-            if applied_set.contains(v) { continue; }
+            if *v > target {
+                break;
+            }
+            if applied_set.contains(v) {
+                continue;
+            }
             info!(version = v, name = m.name(), "applying migration");
             m.up(pool).await?;
             let now = now_rfc3339();
@@ -282,7 +290,8 @@ impl Migrator {
         let applied = self.get_applied(pool).await?;
 
         let mut to_rollback: Vec<i64> = applied
-            .iter().map(|(v, _, _)| *v)
+            .iter()
+            .map(|(v, _, _)| *v)
             .filter(|v| *v > target)
             .collect();
         to_rollback.sort_unstable_by(|a, b| b.cmp(a));
@@ -294,7 +303,8 @@ impl Migrator {
             };
             let Some(down_sql) = m.down_sql() else {
                 return Err(crate::error::DbError::Migrate(format!(
-                    "migration {v} ({}) has no down script", m.name()
+                    "migration {v} ({}) has no down script",
+                    m.name()
                 )));
             };
             info!(version = v, name = m.name(), "rolling back migration");
@@ -307,7 +317,9 @@ impl Migrator {
 }
 
 impl Default for Migrator {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 // ── 文件名解析 ─────────────────────────────────────────
@@ -315,7 +327,9 @@ impl Default for Migrator {
 fn parse_filename(fname: &str) -> Option<(i64, String)> {
     if let Some(stem) = fname.strip_suffix(".sql") {
         let (prefix, ext) = stem.rsplit_once('.')?;
-        if ext != "up" { return None; }
+        if ext != "up" {
+            return None;
+        }
         let mut parts = prefix.splitn(2, '_');
         let ver_str = parts.next()?;
         let name = parts.next()?;
@@ -377,7 +391,7 @@ mod pg_tests {
         // 验证表存在
         let pg = pool.as_postgres().unwrap();
         let exists: (bool,) = sqlx::query_as(
-            "SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_name = $1)"
+            "SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_name = $1)",
         )
         .bind(&vt)
         .fetch_one(pg)
@@ -412,7 +426,7 @@ mod pg_tests {
         // 验证：表存在
         let pg = pool.as_postgres().unwrap();
         let exists: (bool,) = sqlx::query_as(
-            "SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_name = $1)"
+            "SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_name = $1)",
         )
         .bind(&table)
         .fetch_one(pg)
@@ -447,12 +461,14 @@ mod pg_tests {
         let migrator = Migrator::new()
             .with_version_table(&vt)
             .add(SqlMigration::new(
-                1, "create_t1",
+                1,
+                "create_t1",
                 format!("CREATE TABLE {t1} (a INT)"),
                 Some(format!("DROP TABLE IF EXISTS {t1}")),
             ))
             .add(SqlMigration::new(
-                2, "create_t2",
+                2,
+                "create_t2",
                 format!("CREATE TABLE {t2} (b INT)"),
                 Some(format!("DROP TABLE IF EXISTS {t2}")),
             ));
@@ -463,7 +479,7 @@ mod pg_tests {
         let pg = pool.as_postgres().unwrap();
         for t in &[&t1, &t2] {
             let (exists,): (bool,) = sqlx::query_as(
-                "SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_name = $1)"
+                "SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_name = $1)",
             )
             .bind(t)
             .fetch_one(pg)
@@ -492,7 +508,8 @@ mod pg_tests {
         let migrator = Migrator::new()
             .with_version_table(&vt)
             .add(SqlMigration::new(
-                1, "init",
+                1,
+                "init",
                 format!("CREATE TABLE IF NOT EXISTS {table} (x INT)"),
                 Some(format!("DROP TABLE IF EXISTS {table}")),
             ));
@@ -520,15 +537,24 @@ mod pg_tests {
 
         let migrator = Migrator::new()
             .with_version_table(&vt)
-            .add(SqlMigration::new(1, "m1",
+            .add(SqlMigration::new(
+                1,
+                "m1",
                 format!("CREATE TABLE {t1} (a INT)"),
-                Some(format!("DROP TABLE IF EXISTS {t1}"))))
-            .add(SqlMigration::new(2, "m2",
+                Some(format!("DROP TABLE IF EXISTS {t1}")),
+            ))
+            .add(SqlMigration::new(
+                2,
+                "m2",
                 format!("CREATE TABLE {t2} (b INT)"),
-                Some(format!("DROP TABLE IF EXISTS {t2}"))))
-            .add(SqlMigration::new(3, "m3",
+                Some(format!("DROP TABLE IF EXISTS {t2}")),
+            ))
+            .add(SqlMigration::new(
+                3,
+                "m3",
                 format!("CREATE TABLE {t3} (c INT)"),
-                Some(format!("DROP TABLE IF EXISTS {t3}"))));
+                Some(format!("DROP TABLE IF EXISTS {t3}")),
+            ));
 
         // 只应用到版本 2
         migrator.up_to(&pool, Some(2)).await.unwrap();
@@ -541,7 +567,7 @@ mod pg_tests {
         // t3 不应存在
         let pg = pool.as_postgres().unwrap();
         let (t3_exists,): (bool,) = sqlx::query_as(
-            "SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_name = $1)"
+            "SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_name = $1)",
         )
         .bind(&t3)
         .fetch_one(pg)
@@ -595,7 +621,8 @@ mod pg_tests {
         let migrator = Migrator::new()
             .with_version_table(&vt)
             .add(SqlMigration::new(
-                1, "create_rb",
+                1,
+                "create_rb",
                 format!("CREATE TABLE {table} (x INT)"),
                 Some(format!("DROP TABLE IF EXISTS {table}")),
             ));
@@ -609,7 +636,7 @@ mod pg_tests {
         // 验证：表被删除
         let pg = pool.as_postgres().unwrap();
         let (exists,): (bool,) = sqlx::query_as(
-            "SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_name = $1)"
+            "SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_name = $1)",
         )
         .bind(&table)
         .fetch_one(pg)
@@ -684,7 +711,8 @@ mod sqlite_tests {
         let migrator = Migrator::new()
             .with_version_table(&vt)
             .add(SqlMigration::new(
-                1, "create_users",
+                1,
+                "create_users",
                 format!("CREATE TABLE {table} (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT)"),
                 Some(format!("DROP TABLE IF EXISTS {table}")),
             ));
@@ -692,7 +720,9 @@ mod sqlite_tests {
         migrator.up(&p).await.unwrap();
 
         // 可插入数据
-        p.exec(&format!("INSERT INTO {table} (name) VALUES ('test')")).await.unwrap();
+        p.exec(&format!("INSERT INTO {table} (name) VALUES ('test')"))
+            .await
+            .unwrap();
 
         // 版本记录存在
         let records = p.fetch_version_records(&vt).await.unwrap();
@@ -714,7 +744,8 @@ mod sqlite_tests {
         let migrator = Migrator::new()
             .with_version_table(&vt)
             .add(SqlMigration::new(
-                1, "init",
+                1,
+                "init",
                 format!("CREATE TABLE IF NOT EXISTS {table} (x INTEGER)"),
                 Some(format!("DROP TABLE IF EXISTS {table}")),
             ));
@@ -740,7 +771,8 @@ mod sqlite_tests {
         let migrator = Migrator::new()
             .with_version_table(&vt)
             .add(SqlMigration::new(
-                1, "m1",
+                1,
+                "m1",
                 format!("CREATE TABLE {table} (x INTEGER)"),
                 Some(format!("DROP TABLE IF EXISTS {table}")),
             ));
@@ -807,14 +839,19 @@ mod mysql_tests {
         let migrator = Migrator::new()
             .with_version_table(&vt)
             .add(SqlMigration::new(
-                1, "create_users",
-                format!("CREATE TABLE {table} (id INT AUTO_INCREMENT PRIMARY KEY, name VARCHAR(100))"),
+                1,
+                "create_users",
+                format!(
+                    "CREATE TABLE {table} (id INT AUTO_INCREMENT PRIMARY KEY, name VARCHAR(100))"
+                ),
                 Some(format!("DROP TABLE IF EXISTS {table}")),
             ));
 
         migrator.up(&p).await.unwrap();
 
-        p.exec(&format!("INSERT INTO {table} (name) VALUES ('mysql_test')")).await.unwrap();
+        p.exec(&format!("INSERT INTO {table} (name) VALUES ('mysql_test')"))
+            .await
+            .unwrap();
 
         let records = p.fetch_version_records(&vt).await.unwrap();
         assert_eq!(records.len(), 1);
@@ -833,7 +870,8 @@ mod mysql_tests {
         let migrator = Migrator::new()
             .with_version_table(&vt)
             .add(SqlMigration::new(
-                1, "m1",
+                1,
+                "m1",
                 format!("CREATE TABLE {table} (x INT)"),
                 Some(format!("DROP TABLE IF EXISTS {table}")),
             ));

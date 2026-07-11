@@ -1,6 +1,6 @@
+use crate::Database;
 use crate::error::Result;
 use crate::tenant::TenantCtx;
-use crate::Database;
 use async_trait::async_trait;
 
 /// 分页参数。
@@ -13,12 +13,21 @@ pub struct Page {
 }
 
 impl Page {
-    pub fn new(offset: u64, limit: u64) -> Self { Self { offset, limit } }
-    pub fn first(limit: u64) -> Self { Self { offset: 0, limit } }
+    pub fn new(offset: u64, limit: u64) -> Self {
+        Self { offset, limit }
+    }
+    pub fn first(limit: u64) -> Self {
+        Self { offset: 0, limit }
+    }
 }
 
 impl Default for Page {
-    fn default() -> Self { Self { offset: 0, limit: 20 } }
+    fn default() -> Self {
+        Self {
+            offset: 0,
+            limit: 20,
+        }
+    }
 }
 
 /// 分页结果。
@@ -58,7 +67,11 @@ pub trait Repository: Send + Sync {
     }
 
     /// 批量插入。默认实现逐条插入；后端可覆盖以获得更好性能。
-    async fn insert_many(&self, ctx: &TenantCtx, entities: &[Self::Entity]) -> Result<Vec<Self::Id>> {
+    async fn insert_many(
+        &self,
+        ctx: &TenantCtx,
+        entities: &[Self::Entity],
+    ) -> Result<Vec<Self::Id>> {
         let mut ids = Vec::with_capacity(entities.len());
         for e in entities {
             ids.push(self.insert(ctx, e).await?);
@@ -127,7 +140,8 @@ pub async fn cache_invalidate(db: &Database, ctx: &TenantCtx, key: &str) -> Resu
 
 /// 批量使缓存失效。
 pub async fn cache_invalidate_many(db: &Database, ctx: &TenantCtx, keys: &[&str]) -> Result<()> {
-    let full_keys: Vec<String> = keys.iter()
+    let full_keys: Vec<String> = keys
+        .iter()
         .map(|k| format!("{}{}", ctx.cache_prefix(), k))
         .collect();
     db.cache.del_many(&full_keys).await
@@ -148,7 +162,11 @@ mod single_flight {
 
     fn registry() -> &'static Registry {
         static R: OnceLock<Arc<Registry>> = OnceLock::new();
-        R.get_or_init(|| Arc::new(Registry { inflight: Mutex::new(HashMap::new()) }))
+        R.get_or_init(|| {
+            Arc::new(Registry {
+                inflight: Mutex::new(HashMap::new()),
+            })
+        })
     }
 
     /// 同 key 并发只发一次 loader；其余等待结果广播。

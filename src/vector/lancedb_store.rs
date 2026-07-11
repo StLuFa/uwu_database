@@ -16,8 +16,8 @@ use arrow_array::{
 };
 use arrow_schema::{DataType, Field, Schema};
 use futures::TryStreamExt;
-use lancedb::index::vector::IvfPqIndexBuilder;
 use lancedb::index::Index;
+use lancedb::index::vector::IvfPqIndexBuilder;
 use lancedb::query::{ExecutableQuery, QueryBase};
 use lancedb::{Connection, DistanceType};
 use parking_lot::RwLock;
@@ -32,13 +32,22 @@ pub struct LanceDbVectorStore {
 
 impl LanceDbVectorStore {
     pub async fn open(uri: &str) -> Result<Self> {
-        let conn = lancedb::connect(uri).execute().await
+        let conn = lancedb::connect(uri)
+            .execute()
+            .await
             .map_err(|e| DbError::Other(e.to_string()))?;
-        Ok(Self { conn, distances: Default::default() })
+        Ok(Self {
+            conn,
+            distances: Default::default(),
+        })
     }
 
     fn distance_of(&self, collection: &str) -> Distance {
-        self.distances.read().get(collection).copied().unwrap_or(Distance::Cosine)
+        self.distances
+            .read()
+            .get(collection)
+            .copied()
+            .unwrap_or(Distance::Cosine)
     }
 
     /// 在指定集合的 `vector` 列上创建 IVF_PQ 索引。
@@ -50,14 +59,20 @@ impl LanceDbVectorStore {
         num_partitions: u32,
         num_sub_vectors: u32,
     ) -> Result<()> {
-        let table = self.conn.open_table(collection).execute().await
+        let table = self
+            .conn
+            .open_table(collection)
+            .execute()
+            .await
             .map_err(|e| DbError::Other(e.to_string()))?;
         let builder = IvfPqIndexBuilder::default()
             .distance_type(to_distance_type(distance))
             .num_partitions(num_partitions)
             .num_sub_vectors(num_sub_vectors);
-        table.create_index(&["vector"], Index::IvfPq(builder))
-            .execute().await
+        table
+            .create_index(&["vector"], Index::IvfPq(builder))
+            .execute()
+            .await
             .map_err(|e| DbError::Other(e.to_string()))?;
         Ok(())
     }
@@ -88,9 +103,9 @@ fn to_distance_type(d: Distance) -> DistanceType {
 
 fn dist_to_score(d: Distance, dist: f32) -> f32 {
     match d {
-        Distance::Cosine => 1.0 - dist,  // cosine distance ∈ [0,2], score ∈ [-1,1]
-        Distance::L2 => -dist,           // 越小越好 -> 取负
-        Distance::Dot => -dist,          // LanceDB Dot 返回 -dot
+        Distance::Cosine => 1.0 - dist, // cosine distance ∈ [0,2], score ∈ [-1,1]
+        Distance::L2 => -dist,          // 越小越好 -> 取负
+        Distance::Dot => -dist,         // LanceDB Dot 返回 -dot
     }
 }
 
@@ -104,7 +119,9 @@ fn build_batch(records: &[Record], dim: usize) -> Result<RecordBatch> {
     for r in records {
         if r.vector.len() != dim {
             return Err(DbError::Other(format!(
-                "dim mismatch: expected {dim}, got {}", r.vector.len())));
+                "dim mismatch: expected {dim}, got {}",
+                r.vector.len()
+            )));
         }
         for v in &r.vector {
             vec_builder.values().append_value(*v);
@@ -113,7 +130,8 @@ fn build_batch(records: &[Record], dim: usize) -> Result<RecordBatch> {
     }
     let vec_arr: FixedSizeListArray = vec_builder.finish();
 
-    let metas: Vec<String> = records.iter()
+    let metas: Vec<String> = records
+        .iter()
         .map(|r| serde_json::to_string(&r.metadata).unwrap_or_else(|_| "{}".into()))
         .collect();
     let meta_arr = StringArray::from(metas);
@@ -121,15 +139,22 @@ fn build_batch(records: &[Record], dim: usize) -> Result<RecordBatch> {
     RecordBatch::try_new(
         schema,
         vec![Arc::new(id_arr), Arc::new(vec_arr), Arc::new(meta_arr)],
-    ).map_err(|e| DbError::Other(e.to_string()))
+    )
+    .map_err(|e| DbError::Other(e.to_string()))
 }
 
 #[async_trait]
 impl VectorStore for LanceDbVectorStore {
     async fn ensure_collection(&self, spec: CollectionSpec<'_>) -> Result<()> {
-        self.distances.write().insert(spec.name.to_string(), spec.distance);
+        self.distances
+            .write()
+            .insert(spec.name.to_string(), spec.distance);
 
-        let names = self.conn.table_names().execute().await
+        let names = self
+            .conn
+            .table_names()
+            .execute()
+            .await
             .map_err(|e| DbError::Other(e.to_string()))?;
         if names.iter().any(|n| n == spec.name) {
             return Ok(());
@@ -137,14 +162,19 @@ impl VectorStore for LanceDbVectorStore {
         let schema = schema_for(spec.dim);
         let empty = RecordBatch::new_empty(schema.clone());
         let iter = RecordBatchIterator::new(vec![Ok(empty)], schema);
-        self.conn.create_table(spec.name, iter).execute().await
+        self.conn
+            .create_table(spec.name, iter)
+            .execute()
+            .await
             .map_err(|e| DbError::Other(e.to_string()))?;
         Ok(())
     }
 
     async fn drop_collection(&self, name: &str) -> Result<()> {
         self.distances.write().remove(name);
-        self.conn.drop_table(name).await
+        self.conn
+            .drop_table(name)
+            .await
             .map_err(|e| DbError::Other(e.to_string()))?;
         Ok(())
     }
@@ -152,10 +182,16 @@ impl VectorStore for LanceDbVectorStore {
     /// 真正的 upsert：以 `id` 列为 key 通过 `merge_insert` 合并写入。
     /// 与旧的 `add`（累积重复行）不同，此实现保证幂等。
     async fn upsert(&self, collection: &str, records: &[Record]) -> Result<()> {
-        if records.is_empty() { return Ok(()); }
+        if records.is_empty() {
+            return Ok(());
+        }
         let dim = records[0].vector.len();
 
-        let table = self.conn.open_table(collection).execute().await
+        let table = self
+            .conn
+            .open_table(collection)
+            .execute()
+            .await
             .map_err(|e| DbError::Other(e.to_string()))?;
 
         let batch = build_batch(records, dim)?;
@@ -174,14 +210,23 @@ impl VectorStore for LanceDbVectorStore {
     }
 
     async fn delete(&self, collection: &str, ids: &[String]) -> Result<()> {
-        if ids.is_empty() { return Ok(()); }
-        let table = self.conn.open_table(collection).execute().await
+        if ids.is_empty() {
+            return Ok(());
+        }
+        let table = self
+            .conn
+            .open_table(collection)
+            .execute()
+            .await
             .map_err(|e| DbError::Other(e.to_string()))?;
-        let quoted: Vec<String> = ids.iter()
+        let quoted: Vec<String> = ids
+            .iter()
             .map(|s| format!("'{}'", s.replace('\'', "''")))
             .collect();
         let predicate = format!("id IN ({})", quoted.join(","));
-        table.delete(&predicate).await
+        table
+            .delete(&predicate)
+            .await
             .map_err(|e| DbError::Other(e.to_string()))?;
         Ok(())
     }
@@ -189,7 +234,11 @@ impl VectorStore for LanceDbVectorStore {
     async fn search(&self, collection: &str, query: Query<'_>) -> Result<Vec<Match>> {
         let dist = self.distance_of(collection);
 
-        let table = self.conn.open_table(collection).execute().await
+        let table = self
+            .conn
+            .open_table(collection)
+            .execute()
+            .await
             .map_err(|e| DbError::Other(e.to_string()))?;
 
         // 请求比 top_k 多一些，以应对客户端过滤后数量不足
@@ -208,23 +257,30 @@ impl VectorStore for LanceDbVectorStore {
             .await
             .map_err(|e| DbError::Other(e.to_string()))?;
 
-        let batches: Vec<RecordBatch> = stream.try_collect().await
+        let batches: Vec<RecordBatch> = stream
+            .try_collect()
+            .await
             .map_err(|e| DbError::Other(e.to_string()))?;
 
         let mut out = Vec::new();
         'outer: for batch in batches {
-            let id_col = batch.column_by_name("id")
+            let id_col = batch
+                .column_by_name("id")
                 .and_then(|c| c.as_any().downcast_ref::<StringArray>())
                 .ok_or_else(|| DbError::Other("missing id column".into()))?;
-            let meta_col = batch.column_by_name("metadata")
+            let meta_col = batch
+                .column_by_name("metadata")
                 .and_then(|c| c.as_any().downcast_ref::<StringArray>())
                 .ok_or_else(|| DbError::Other("missing metadata column".into()))?;
-            let dist_col = batch.column_by_name("_distance")
+            let dist_col = batch
+                .column_by_name("_distance")
                 .and_then(|c| c.as_any().downcast_ref::<arrow_array::Float32Array>())
                 .ok_or_else(|| DbError::Other("missing _distance column".into()))?;
 
             for i in 0..batch.num_rows() {
-                if out.len() >= query.top_k { break 'outer; }
+                if out.len() >= query.top_k {
+                    break 'outer;
+                }
 
                 let id = id_col.value(i).to_string();
                 let raw_dist = dist_col.value(i);
@@ -249,5 +305,7 @@ impl VectorStore for LanceDbVectorStore {
         Ok(out)
     }
 
-    fn backend_name(&self) -> &'static str { "lancedb" }
+    fn backend_name(&self) -> &'static str {
+        "lancedb"
+    }
 }

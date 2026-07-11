@@ -18,18 +18,21 @@ pub struct MemoryVectorStore {
 }
 
 impl MemoryVectorStore {
-    pub fn new() -> Self { Self::default() }
+    pub fn new() -> Self {
+        Self::default()
+    }
 }
 
 #[async_trait]
 impl VectorStore for MemoryVectorStore {
     async fn ensure_collection(&self, spec: CollectionSpec<'_>) -> Result<()> {
         let mut g = self.inner.write();
-        g.entry(spec.name.to_string()).or_insert_with(|| Collection {
-            dim: spec.dim,
-            distance: spec.distance,
-            records: HashMap::new(),
-        });
+        g.entry(spec.name.to_string())
+            .or_insert_with(|| Collection {
+                dim: spec.dim,
+                distance: spec.distance,
+                records: HashMap::new(),
+            });
         Ok(())
     }
 
@@ -40,12 +43,16 @@ impl VectorStore for MemoryVectorStore {
 
     async fn upsert(&self, collection: &str, records: &[Record]) -> Result<()> {
         let mut g = self.inner.write();
-        let c = g.get_mut(collection).ok_or_else(||
-            DbError::Other(format!("collection `{collection}` not found")))?;
+        let c = g
+            .get_mut(collection)
+            .ok_or_else(|| DbError::Other(format!("collection `{collection}` not found")))?;
         for r in records {
             if r.vector.len() != c.dim {
                 return Err(DbError::Other(format!(
-                    "dim mismatch: expected {}, got {}", c.dim, r.vector.len())));
+                    "dim mismatch: expected {}, got {}",
+                    c.dim,
+                    r.vector.len()
+                )));
             }
             c.records.insert(r.id.clone(), r.clone());
         }
@@ -55,15 +62,18 @@ impl VectorStore for MemoryVectorStore {
     async fn delete(&self, collection: &str, ids: &[String]) -> Result<()> {
         let mut g = self.inner.write();
         if let Some(c) = g.get_mut(collection) {
-            for id in ids { c.records.remove(id); }
+            for id in ids {
+                c.records.remove(id);
+            }
         }
         Ok(())
     }
 
     async fn search(&self, collection: &str, query: Query<'_>) -> Result<Vec<Match>> {
         let g = self.inner.read();
-        let c = g.get(collection).ok_or_else(||
-            DbError::Other(format!("collection `{collection}` not found")))?;
+        let c = g
+            .get(collection)
+            .ok_or_else(|| DbError::Other(format!("collection `{collection}` not found")))?;
         if query.vector.len() != c.dim {
             return Err(DbError::Other("query dim mismatch".into()));
         }
@@ -90,7 +100,8 @@ impl VectorStore for MemoryVectorStore {
             }
             #[cfg(not(feature = "vector-parallel"))]
             {
-                iter.map(|r| (score(distance, qvec, &r.vector), r)).collect()
+                iter.map(|r| (score(distance, qvec, &r.vector), r))
+                    .collect()
             }
         };
 
@@ -101,25 +112,36 @@ impl VectorStore for MemoryVectorStore {
         // 维护一个最小堆（堆顶是当前 top-k 中最小分），超过 k 就 pop
         let mut heap: BinaryHeap<Reverse<HeapEntry>> = BinaryHeap::with_capacity(top_k + 1);
         for (sc, r) in scored {
-            heap.push(Reverse(HeapEntry { score: sc, id: r.id.clone(), record: r }));
+            heap.push(Reverse(HeapEntry {
+                score: sc,
+                id: r.id.clone(),
+                record: r,
+            }));
             if heap.len() > top_k {
                 heap.pop();
             }
         }
 
         // 3. 输出按分数降序
-        let mut hits: Vec<Match> = heap.into_iter()
+        let mut hits: Vec<Match> = heap
+            .into_iter()
             .map(|Reverse(e)| Match {
                 id: e.id,
                 score: e.score,
                 metadata: e.record.metadata.clone(),
             })
             .collect();
-        hits.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+        hits.sort_by(|a, b| {
+            b.score
+                .partial_cmp(&a.score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
         Ok(hits)
     }
 
-    fn backend_name(&self) -> &'static str { "memory" }
+    fn backend_name(&self) -> &'static str {
+        "memory"
+    }
 }
 
 struct HeapEntry<'a> {
@@ -129,15 +151,21 @@ struct HeapEntry<'a> {
 }
 
 impl<'a> PartialEq for HeapEntry<'a> {
-    fn eq(&self, other: &Self) -> bool { self.score == other.score }
+    fn eq(&self, other: &Self) -> bool {
+        self.score == other.score
+    }
 }
 impl<'a> Eq for HeapEntry<'a> {}
 impl<'a> PartialOrd for HeapEntry<'a> {
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> { Some(self.cmp(other)) }
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
 }
 impl<'a> Ord for HeapEntry<'a> {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        self.score.partial_cmp(&other.score).unwrap_or(std::cmp::Ordering::Equal)
+        self.score
+            .partial_cmp(&other.score)
+            .unwrap_or(std::cmp::Ordering::Equal)
     }
 }
 
@@ -147,7 +175,14 @@ fn score(d: Distance, a: &[f32], b: &[f32]) -> f32 {
         Distance::Dot => a.iter().zip(b).map(|(x, y)| x * y).sum(),
         // 转成相似度：距离越小越好 -> 取负
         Distance::L2 => {
-            let s: f32 = a.iter().zip(b).map(|(x, y)| { let d = x - y; d * d }).sum();
+            let s: f32 = a
+                .iter()
+                .zip(b)
+                .map(|(x, y)| {
+                    let d = x - y;
+                    d * d
+                })
+                .sum();
             -s.sqrt()
         }
     }
@@ -166,7 +201,14 @@ mod tests {
     }
 
     async fn setup(store: &MemoryVectorStore, name: &str, dim: usize, distance: Distance) {
-        store.ensure_collection(CollectionSpec { name, dim, distance }).await.unwrap();
+        store
+            .ensure_collection(CollectionSpec {
+                name,
+                dim,
+                distance,
+            })
+            .await
+            .unwrap();
     }
 
     // ── 集合管理 ───────────────────────────────────────
@@ -174,9 +216,21 @@ mod tests {
     #[tokio::test]
     async fn test_ensure_collection() {
         let s = store();
-        s.ensure_collection(CollectionSpec { name: "coll", dim: 3, distance: Distance::Cosine }).await.unwrap();
+        s.ensure_collection(CollectionSpec {
+            name: "coll",
+            dim: 3,
+            distance: Distance::Cosine,
+        })
+        .await
+        .unwrap();
         // 幂等
-        s.ensure_collection(CollectionSpec { name: "coll", dim: 3, distance: Distance::Cosine }).await.unwrap();
+        s.ensure_collection(CollectionSpec {
+            name: "coll",
+            dim: 3,
+            distance: Distance::Cosine,
+        })
+        .await
+        .unwrap();
     }
 
     #[tokio::test]
@@ -185,7 +239,11 @@ mod tests {
         setup(&s, "dropped", 2, Distance::L2).await;
         s.drop_collection("dropped").await.unwrap();
         // 删除后 upsert 应该报错
-        assert!(s.upsert("dropped", &[record("x", vec![0.0, 0.0])]).await.is_err());
+        assert!(
+            s.upsert("dropped", &[record("x", vec![0.0, 0.0])])
+                .await
+                .is_err()
+        );
     }
 
     #[tokio::test]
@@ -197,7 +255,11 @@ mod tests {
     // ── Upsert & Search ────────────────────────────────
 
     fn record(id: &str, vector: Vec<f32>) -> Record {
-        Record { id: id.into(), vector, metadata: Default::default() }
+        Record {
+            id: id.into(),
+            vector,
+            metadata: Default::default(),
+        }
     }
 
     #[tokio::test]
@@ -206,15 +268,40 @@ mod tests {
         let coll = "cs";
         setup(&s, coll, 3, Distance::Cosine).await;
 
-        s.upsert(coll, &[
-            Record { id: "a".into(), vector: vec![1.0, 0.0, 0.0], metadata: Default::default() },
-            Record { id: "b".into(), vector: vec![0.0, 1.0, 0.0], metadata: Default::default() },
-            Record { id: "c".into(), vector: vec![1.0, 1.0, 0.0], metadata: Default::default() },
-        ]).await.unwrap();
+        s.upsert(
+            coll,
+            &[
+                Record {
+                    id: "a".into(),
+                    vector: vec![1.0, 0.0, 0.0],
+                    metadata: Default::default(),
+                },
+                Record {
+                    id: "b".into(),
+                    vector: vec![0.0, 1.0, 0.0],
+                    metadata: Default::default(),
+                },
+                Record {
+                    id: "c".into(),
+                    vector: vec![1.0, 1.0, 0.0],
+                    metadata: Default::default(),
+                },
+            ],
+        )
+        .await
+        .unwrap();
 
-        let hits = s.search(coll, Query {
-            vector: &[1.0, 0.0, 0.0], top_k: 2, filter: None,
-        }).await.unwrap();
+        let hits = s
+            .search(
+                coll,
+                Query {
+                    vector: &[1.0, 0.0, 0.0],
+                    top_k: 2,
+                    filter: None,
+                },
+            )
+            .await
+            .unwrap();
 
         assert_eq!(hits.len(), 2);
         assert_eq!(hits[0].id, "a", "cosine: closest to [1,0,0] should be a");
@@ -227,16 +314,32 @@ mod tests {
         let coll = "l2";
         setup(&s, coll, 2, Distance::L2).await;
 
-        s.upsert(coll, &[
-            record("near", vec![0.0, 0.0]),
-            record("far", vec![10.0, 10.0]),
-        ]).await.unwrap();
+        s.upsert(
+            coll,
+            &[
+                record("near", vec![0.0, 0.0]),
+                record("far", vec![10.0, 10.0]),
+            ],
+        )
+        .await
+        .unwrap();
 
-        let hits = s.search(coll, Query {
-            vector: &[0.0, 0.0], top_k: 2, filter: None,
-        }).await.unwrap();
+        let hits = s
+            .search(
+                coll,
+                Query {
+                    vector: &[0.0, 0.0],
+                    top_k: 2,
+                    filter: None,
+                },
+            )
+            .await
+            .unwrap();
         assert_eq!(hits[0].id, "near");
-        assert!(hits[0].score > hits[1].score, "L2: near should score higher");
+        assert!(
+            hits[0].score > hits[1].score,
+            "L2: near should score higher"
+        );
     }
 
     #[tokio::test]
@@ -245,14 +348,27 @@ mod tests {
         let coll = "dot";
         setup(&s, coll, 2, Distance::Dot).await;
 
-        s.upsert(coll, &[
-            record("aligned", vec![2.0, 0.0]),
-            record("opposite", vec![-2.0, 0.0]),
-        ]).await.unwrap();
+        s.upsert(
+            coll,
+            &[
+                record("aligned", vec![2.0, 0.0]),
+                record("opposite", vec![-2.0, 0.0]),
+            ],
+        )
+        .await
+        .unwrap();
 
-        let hits = s.search(coll, Query {
-            vector: &[1.0, 0.0], top_k: 2, filter: None,
-        }).await.unwrap();
+        let hits = s
+            .search(
+                coll,
+                Query {
+                    vector: &[1.0, 0.0],
+                    top_k: 2,
+                    filter: None,
+                },
+            )
+            .await
+            .unwrap();
         assert_eq!(hits[0].id, "aligned");
     }
 
@@ -266,17 +382,34 @@ mod tests {
 
         let mut meta = std::collections::HashMap::new();
         meta.insert("tag".into(), serde_json::json!("keep"));
-        s.upsert(coll, &[
-            Record { id: "keep".into(), vector: vec![1.0, 0.0], metadata: meta.clone() },
-            record("skip", vec![0.99, 0.01]),
-        ]).await.unwrap();
+        s.upsert(
+            coll,
+            &[
+                Record {
+                    id: "keep".into(),
+                    vector: vec![1.0, 0.0],
+                    metadata: meta.clone(),
+                },
+                record("skip", vec![0.99, 0.01]),
+            ],
+        )
+        .await
+        .unwrap();
 
         let mut filter = std::collections::HashMap::new();
         filter.insert("tag".into(), serde_json::json!("keep"));
 
-        let hits = s.search(coll, Query {
-            vector: &[1.0, 0.0], top_k: 5, filter: Some(&filter),
-        }).await.unwrap();
+        let hits = s
+            .search(
+                coll,
+                Query {
+                    vector: &[1.0, 0.0],
+                    top_k: 5,
+                    filter: Some(&filter),
+                },
+            )
+            .await
+            .unwrap();
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].id, "keep");
     }
@@ -289,12 +422,25 @@ mod tests {
         let coll = "del";
         setup(&s, coll, 2, Distance::Cosine).await;
 
-        s.upsert(coll, &[record("a", vec![1.0, 0.0]), record("b", vec![0.0, 1.0])]).await.unwrap();
+        s.upsert(
+            coll,
+            &[record("a", vec![1.0, 0.0]), record("b", vec![0.0, 1.0])],
+        )
+        .await
+        .unwrap();
         s.delete(coll, &["a".into()]).await.unwrap();
 
-        let hits = s.search(coll, Query {
-            vector: &[1.0, 0.0], top_k: 5, filter: None,
-        }).await.unwrap();
+        let hits = s
+            .search(
+                coll,
+                Query {
+                    vector: &[1.0, 0.0],
+                    top_k: 5,
+                    filter: None,
+                },
+            )
+            .await
+            .unwrap();
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].id, "b");
     }
@@ -327,9 +473,16 @@ mod tests {
     async fn test_search_dimension_mismatch() {
         let s = store();
         setup(&s, "dim2", 3, Distance::Cosine).await;
-        let r = s.search("dim2", Query {
-            vector: &[1.0, 2.0], top_k: 1, filter: None,
-        }).await;
+        let r = s
+            .search(
+                "dim2",
+                Query {
+                    vector: &[1.0, 2.0],
+                    top_k: 1,
+                    filter: None,
+                },
+            )
+            .await;
         assert!(r.is_err(), "dimension mismatch should error");
     }
 
@@ -341,17 +494,34 @@ mod tests {
         let coll = "over";
         setup(&s, coll, 2, Distance::Cosine).await;
 
-        s.upsert(coll, &[record("r1", vec![1.0, 0.0])]).await.unwrap();
+        s.upsert(coll, &[record("r1", vec![1.0, 0.0])])
+            .await
+            .unwrap();
 
         let mut meta = std::collections::HashMap::new();
         meta.insert("v".into(), serde_json::json!(2));
-        s.upsert(coll, &[Record {
-            id: "r1".into(), vector: vec![0.0, 1.0], metadata: meta.clone(),
-        }]).await.unwrap();
+        s.upsert(
+            coll,
+            &[Record {
+                id: "r1".into(),
+                vector: vec![0.0, 1.0],
+                metadata: meta.clone(),
+            }],
+        )
+        .await
+        .unwrap();
 
-        let hits = s.search(coll, Query {
-            vector: &[0.0, 1.0], top_k: 1, filter: None,
-        }).await.unwrap();
+        let hits = s
+            .search(
+                coll,
+                Query {
+                    vector: &[0.0, 1.0],
+                    top_k: 1,
+                    filter: None,
+                },
+            )
+            .await
+            .unwrap();
         assert_eq!(hits[0].id, "r1");
         assert_eq!(hits[0].metadata.get("v").and_then(|v| v.as_i64()), Some(2));
     }
@@ -370,11 +540,21 @@ mod tests {
         let s = store();
         let coll = "top1";
         setup(&s, coll, 2, Distance::Cosine).await;
-        s.upsert(coll, &[record("only", vec![1.0, 0.0])]).await.unwrap();
+        s.upsert(coll, &[record("only", vec![1.0, 0.0])])
+            .await
+            .unwrap();
 
-        let hits = s.search(coll, Query {
-            vector: &[1.0, 0.0], top_k: 1, filter: None,
-        }).await.unwrap();
+        let hits = s
+            .search(
+                coll,
+                Query {
+                    vector: &[1.0, 0.0],
+                    top_k: 1,
+                    filter: None,
+                },
+            )
+            .await
+            .unwrap();
         assert_eq!(hits.len(), 1);
     }
 }

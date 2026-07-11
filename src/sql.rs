@@ -1,7 +1,7 @@
 use crate::config::{DbConfig, SqlBackend};
 use crate::error::{DbError, Result};
-use sqlx::pool::PoolOptions;
 use sqlx::Row;
+use sqlx::pool::PoolOptions;
 
 /// 多后端 Pool 枚举。
 #[derive(Clone, Debug)]
@@ -74,46 +74,70 @@ impl DbPool {
         for stmt in split_sql(sql) {
             match self {
                 #[cfg(feature = "postgres")]
-                DbPool::Postgres(p) => { sqlx::query(&stmt).execute(p).await?; }
+                DbPool::Postgres(p) => {
+                    sqlx::query(&stmt).execute(p).await?;
+                }
                 #[cfg(feature = "mysql")]
-                DbPool::MySql(p)    => { sqlx::query(&stmt).execute(p).await?; }
+                DbPool::MySql(p) => {
+                    sqlx::query(&stmt).execute(p).await?;
+                }
                 #[cfg(feature = "sqlite")]
-                DbPool::Sqlite(p)   => { sqlx::query(&stmt).execute(p).await?; }
+                DbPool::Sqlite(p) => {
+                    sqlx::query(&stmt).execute(p).await?;
+                }
             }
         }
         Ok(())
     }
 
     /// 查询版本跟踪表，返回 (version, name, applied_at) 列表。
-    pub async fn fetch_version_records(
-        &self,
-        table: &str,
-    ) -> Result<Vec<(i64, String, String)>> {
+    pub async fn fetch_version_records(&self, table: &str) -> Result<Vec<(i64, String, String)>> {
         let sql = format!(
             "SELECT version, name, applied_at FROM \"{}\" ORDER BY version",
-            table.replace('"', "\"\"")  // 简单防注入
+            table.replace('"', "\"\"") // 简单防注入
         );
         match self {
             #[cfg(feature = "postgres")]
             DbPool::Postgres(p) => {
                 let rows = sqlx::query(&sql).fetch_all(p).await?;
-                Ok(rows.into_iter().map(|r| {
-                    (r.get::<i64,_>("version"), r.get::<String,_>("name"), r.get::<String,_>("applied_at"))
-                }).collect())
+                Ok(rows
+                    .into_iter()
+                    .map(|r| {
+                        (
+                            r.get::<i64, _>("version"),
+                            r.get::<String, _>("name"),
+                            r.get::<String, _>("applied_at"),
+                        )
+                    })
+                    .collect())
             }
             #[cfg(feature = "mysql")]
             DbPool::MySql(p) => {
                 let rows = sqlx::query(&sql).fetch_all(p).await?;
-                Ok(rows.into_iter().map(|r| {
-                    (r.get::<i64,_>("version"), r.get::<String,_>("name"), r.get::<String,_>("applied_at"))
-                }).collect())
+                Ok(rows
+                    .into_iter()
+                    .map(|r| {
+                        (
+                            r.get::<i64, _>("version"),
+                            r.get::<String, _>("name"),
+                            r.get::<String, _>("applied_at"),
+                        )
+                    })
+                    .collect())
             }
             #[cfg(feature = "sqlite")]
             DbPool::Sqlite(p) => {
                 let rows = sqlx::query(&sql).fetch_all(p).await?;
-                Ok(rows.into_iter().map(|r| {
-                    (r.get::<i64,_>("version"), r.get::<String,_>("name"), r.get::<String,_>("applied_at"))
-                }).collect())
+                Ok(rows
+                    .into_iter()
+                    .map(|r| {
+                        (
+                            r.get::<i64, _>("version"),
+                            r.get::<String, _>("name"),
+                            r.get::<String, _>("applied_at"),
+                        )
+                    })
+                    .collect())
             }
         }
     }
@@ -145,11 +169,7 @@ impl DbPool {
     }
 
     /// 从版本跟踪表删除一条记录。
-    pub async fn delete_version_record(
-        &self,
-        table: &str,
-        version: i64,
-    ) -> Result<()> {
+    pub async fn delete_version_record(&self, table: &str, version: i64) -> Result<()> {
         let sql = format!(
             "DELETE FROM \"{}\" WHERE version = {}",
             table.replace('"', "\"\""),
@@ -171,14 +191,18 @@ fn split_sql(sql: &str) -> Vec<String> {
         cur.push(c);
         if let Some(quote) = in_string {
             if c == '\\' {
-                if let Some(next) = chars.next() { cur.push(next); }
+                if let Some(next) = chars.next() {
+                    cur.push(next);
+                }
             } else if c == quote {
                 in_string = None;
             }
             continue;
         }
         match c {
-            '\'' | '"' => { in_string = Some(c); }
+            '\'' | '"' => {
+                in_string = Some(c);
+            }
             ';' => {
                 let s = cur.trim().to_string();
                 if !s.is_empty() && !s.starts_with("--") && !s.starts_with('#') {
@@ -228,7 +252,9 @@ pub async fn build_pool(cfg: &DbConfig) -> Result<DbPool> {
                 Ok(DbPool::Postgres(pool))
             }
             #[cfg(not(feature = "postgres"))]
-            { Err(DbError::Unsupported("postgres feature disabled".into())) }
+            {
+                Err(DbError::Unsupported("postgres feature disabled".into()))
+            }
         }
         SqlBackend::MySql => {
             #[cfg(feature = "mysql")]
@@ -251,7 +277,9 @@ pub async fn build_pool(cfg: &DbConfig) -> Result<DbPool> {
                 Ok(DbPool::MySql(pool))
             }
             #[cfg(not(feature = "mysql"))]
-            { Err(DbError::Unsupported("mysql feature disabled".into())) }
+            {
+                Err(DbError::Unsupported("mysql feature disabled".into()))
+            }
         }
         SqlBackend::Sqlite => {
             #[cfg(feature = "sqlite")]
@@ -274,7 +302,9 @@ pub async fn build_pool(cfg: &DbConfig) -> Result<DbPool> {
                 Ok(DbPool::Sqlite(pool))
             }
             #[cfg(not(feature = "sqlite"))]
-            { Err(DbError::Unsupported("sqlite feature disabled".into())) }
+            {
+                Err(DbError::Unsupported("sqlite feature disabled".into()))
+            }
         }
     }
 }
@@ -337,11 +367,10 @@ mod pg_tests {
 
         // DML: SELECT（通过 raw query 验证）
         let pg = pool.as_postgres().unwrap();
-        let row: (i32, String) =
-            sqlx::query_as(&format!("SELECT id, name FROM {table}"))
-                .fetch_one(pg)
-                .await
-                .expect("select");
+        let row: (i32, String) = sqlx::query_as(&format!("SELECT id, name FROM {table}"))
+            .fetch_one(pg)
+            .await
+            .expect("select");
         assert_eq!(row.0, 1);
         assert_eq!(row.1, "alice");
 
@@ -366,11 +395,10 @@ mod pg_tests {
         .expect("multi-statement exec");
 
         let pg = pool.as_postgres().unwrap();
-        let count: (i64,) =
-            sqlx::query_as(&format!("SELECT COUNT(*) FROM {table}"))
-                .fetch_one(pg)
-                .await
-                .unwrap();
+        let count: (i64,) = sqlx::query_as(&format!("SELECT COUNT(*) FROM {table}"))
+            .fetch_one(pg)
+            .await
+            .unwrap();
         assert_eq!(count.0, 2);
 
         let _ = pool.exec(&format!("DROP TABLE IF EXISTS {table}")).await;
@@ -524,11 +552,10 @@ mod sqlite_tests {
             .expect("insert");
 
         let s = p.as_sqlite().unwrap();
-        let row: (i64, String) =
-            sqlx::query_as(&format!("SELECT id, name FROM {table}"))
-                .fetch_one(s)
-                .await
-                .expect("select");
+        let row: (i64, String) = sqlx::query_as(&format!("SELECT id, name FROM {table}"))
+            .fetch_one(s)
+            .await
+            .expect("select");
         assert_eq!(row.0, 1);
         assert_eq!(row.1, "alice");
 
@@ -543,16 +570,21 @@ mod sqlite_tests {
         let table = format!("{prefix}_m");
 
         // SQLite 下逐条执行（sqlx 不支持多条语句一起）
-        p.exec(&format!("CREATE TABLE {table} (x INTEGER)")).await.unwrap();
-        p.exec(&format!("INSERT INTO {table} VALUES (1)")).await.unwrap();
-        p.exec(&format!("INSERT INTO {table} VALUES (2)")).await.unwrap();
+        p.exec(&format!("CREATE TABLE {table} (x INTEGER)"))
+            .await
+            .unwrap();
+        p.exec(&format!("INSERT INTO {table} VALUES (1)"))
+            .await
+            .unwrap();
+        p.exec(&format!("INSERT INTO {table} VALUES (2)"))
+            .await
+            .unwrap();
 
         let s = p.as_sqlite().unwrap();
-        let count: (i64,) =
-            sqlx::query_as(&format!("SELECT COUNT(*) FROM {table}"))
-                .fetch_one(s)
-                .await
-                .unwrap();
+        let count: (i64,) = sqlx::query_as(&format!("SELECT COUNT(*) FROM {table}"))
+            .fetch_one(s)
+            .await
+            .unwrap();
         assert_eq!(count.0, 2);
 
         let _ = p.exec(&format!("DROP TABLE IF EXISTS {table}")).await;
@@ -585,7 +617,9 @@ mod sqlite_tests {
         .await
         .unwrap();
 
-        p.insert_version_record(&vt, 1, "init", "1000", "abc").await.unwrap();
+        p.insert_version_record(&vt, 1, "init", "1000", "abc")
+            .await
+            .unwrap();
         let records = p.fetch_version_records(&vt).await.unwrap();
         assert_eq!(records.len(), 1);
         assert_eq!(records[0].1, "init");
@@ -662,11 +696,10 @@ mod mysql_tests {
             .expect("insert");
 
         let m = p.as_mysql().unwrap();
-        let row: (i32, String) =
-            sqlx::query_as(&format!("SELECT id, name FROM {table}"))
-                .fetch_one(m)
-                .await
-                .expect("select");
+        let row: (i32, String) = sqlx::query_as(&format!("SELECT id, name FROM {table}"))
+            .fetch_one(m)
+            .await
+            .expect("select");
         assert_eq!(row.0, 1);
         assert_eq!(row.1, "bob");
 
@@ -700,7 +733,9 @@ mod mysql_tests {
         .await
         .unwrap();
 
-        p.insert_version_record(&vt, 1, "m1", "1000", "sha").await.unwrap();
+        p.insert_version_record(&vt, 1, "m1", "1000", "sha")
+            .await
+            .unwrap();
 
         let records = p.fetch_version_records(&vt).await.unwrap();
         assert_eq!(records.len(), 1);

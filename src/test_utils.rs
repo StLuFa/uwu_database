@@ -8,7 +8,10 @@
 //! 每个测试模块使用独立的前缀隔离，避免相互干扰。
 //! 无对应环境变量时 PG/MySQL/Qdrant 测试会 panic-skip。
 
-use crate::config::{CacheBackend, CacheConfig, DbConfig, DeployConfig, RuntimeConfig, SqlBackend, VectorBackend, VectorConfig};
+use crate::config::{
+    CacheBackend, CacheConfig, DbConfig, DeployConfig, RuntimeConfig, SqlBackend, VectorBackend,
+    VectorConfig,
+};
 use crate::sql::{self, DbPool};
 use std::sync::atomic::{AtomicU32, Ordering};
 use uuid::Uuid;
@@ -54,8 +57,16 @@ pub fn pg_config() -> Option<RuntimeConfig> {
             statement_cache_capacity: 100,
             application_name: Some("uwu_db_test".into()),
         },
-        cache: CacheConfig { backend: CacheBackend::None, capacity: 0, url: None },
-        vector: VectorConfig { backend: VectorBackend::Memory, url: None, api_key: None },
+        cache: CacheConfig {
+            backend: CacheBackend::None,
+            capacity: 0,
+            url: None,
+        },
+        vector: VectorConfig {
+            backend: VectorBackend::Memory,
+            url: None,
+            api_key: None,
+        },
     })
 }
 
@@ -92,8 +103,16 @@ pub fn mysql_config() -> Option<RuntimeConfig> {
             statement_cache_capacity: 100,
             application_name: Some("uwu_db_test".into()),
         },
-        cache: CacheConfig { backend: CacheBackend::None, capacity: 0, url: None },
-        vector: VectorConfig { backend: VectorBackend::Memory, url: None, api_key: None },
+        cache: CacheConfig {
+            backend: CacheBackend::None,
+            capacity: 0,
+            url: None,
+        },
+        vector: VectorConfig {
+            backend: VectorBackend::Memory,
+            url: None,
+            api_key: None,
+        },
     })
 }
 
@@ -121,14 +140,24 @@ pub fn sqlite_config() -> RuntimeConfig {
             statement_cache_capacity: 100,
             application_name: Some("uwu_db_test".into()),
         },
-        cache: CacheConfig { backend: CacheBackend::None, capacity: 0, url: None },
-        vector: VectorConfig { backend: VectorBackend::Memory, url: None, api_key: None },
+        cache: CacheConfig {
+            backend: CacheBackend::None,
+            capacity: 0,
+            url: None,
+        },
+        vector: VectorConfig {
+            backend: VectorBackend::Memory,
+            url: None,
+            api_key: None,
+        },
     }
 }
 
 pub async fn sqlite_pool() -> DbPool {
     let cfg = sqlite_config();
-    sql::build_pool(&cfg.database).await.expect("sqlite memory pool")
+    sql::build_pool(&cfg.database)
+        .await
+        .expect("sqlite memory pool")
 }
 
 // ===========================================================================

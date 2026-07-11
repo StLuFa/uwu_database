@@ -9,31 +9,31 @@
 //! - `vector-memory` / `vector-pgvector` / `vector-qdrant` / `vector-lancedb`：向量后端
 //! - `community` / `enterprise`：版本开关（企业版包含 `multi-tenant` 与 `audit-log`）
 
+pub mod cache;
 pub mod config;
 pub mod error;
 pub mod features;
-pub mod sql;
-pub mod cache;
+pub mod migrate;
 pub mod repo;
+pub mod sql;
 pub mod tenant;
 pub mod vector;
-pub mod migrate;
 
 #[cfg(test)]
 pub mod test_utils;
 
+pub use cache::Cache;
 pub use config::{
-    AppConfig, CacheBackend, CacheConfig, DbConfig, DeployMode, Edition,
-    RuntimeConfig, SqlBackend, VectorBackend, VectorConfig,
+    AppConfig, CacheBackend, CacheConfig, DbConfig, DeployMode, Edition, RuntimeConfig, SqlBackend,
+    VectorBackend, VectorConfig,
 };
 pub use error::{DbError, Result};
 pub use features::{FeatureKey, Features};
-pub use sql::DbPool;
-pub use cache::Cache;
+pub use migrate::{Migration, MigrationRecord, Migrator, SqlMigration};
 pub use repo::{Page, PagedResult, Repository};
+pub use sql::DbPool;
 pub use tenant::{TenantCtx, TenantId};
 pub use vector::{CollectionSpec, Distance, Match, Query, Record, VectorStore};
-pub use migrate::{Migrator, Migration, MigrationRecord, SqlMigration};
 
 use std::sync::Arc;
 
@@ -53,7 +53,12 @@ impl Database {
         let pool = sql::build_pool(&cfg.database).await?;
         let cache = cache::build_cache(&cfg.cache).await?;
         let features = Arc::new(Features::from_config(cfg));
-        Ok(Self { pool, cache, features, vector: None })
+        Ok(Self {
+            pool,
+            cache,
+            features,
+            vector: None,
+        })
     }
 
     /// 按运行时配置构建，同时初始化向量后端。
@@ -66,7 +71,9 @@ impl Database {
 
     /// 获取向量存储；未配置时返回错误。
     pub fn vector_store(&self) -> Result<&Arc<dyn VectorStore>> {
-        self.vector.as_ref().ok_or_else(|| DbError::Config("vector store not configured".into()))
+        self.vector
+            .as_ref()
+            .ok_or_else(|| DbError::Config("vector store not configured".into()))
     }
 
     /// 关闭底层资源。
@@ -95,7 +102,10 @@ impl Database {
     }
 
     /// 查看迁移状态。
-    pub async fn migrate_status(&self, m: &migrate::Migrator) -> Result<Vec<migrate::MigrationRecord>> {
+    pub async fn migrate_status(
+        &self,
+        m: &migrate::Migrator,
+    ) -> Result<Vec<migrate::MigrationRecord>> {
         m.status(&self.pool).await
     }
 }
@@ -113,7 +123,11 @@ pub async fn build_vector_store(
                 Ok(Arc::new(vector::memory::MemoryVectorStore::new()))
             }
             #[cfg(not(feature = "vector-memory"))]
-            { Err(DbError::Unsupported("vector-memory feature disabled".into())) }
+            {
+                Err(DbError::Unsupported(
+                    "vector-memory feature disabled".into(),
+                ))
+            }
         }
         VectorBackend::Pgvector => {
             #[cfg(feature = "vector-pgvector")]
@@ -122,18 +136,28 @@ pub async fn build_vector_store(
                 Ok(Arc::new(store))
             }
             #[cfg(not(feature = "vector-pgvector"))]
-            { Err(DbError::Unsupported("vector-pgvector feature disabled".into())) }
+            {
+                Err(DbError::Unsupported(
+                    "vector-pgvector feature disabled".into(),
+                ))
+            }
         }
         VectorBackend::Qdrant => {
             #[cfg(feature = "vector-qdrant")]
             {
-                let url = cfg.url.as_deref().ok_or_else(||
-                    DbError::Config("qdrant url is required".into()))?;
+                let url = cfg
+                    .url
+                    .as_deref()
+                    .ok_or_else(|| DbError::Config("qdrant url is required".into()))?;
                 let store = vector::qdrant_store::QdrantVectorStore::new(url, cfg.api_key.clone())?;
                 Ok(Arc::new(store))
             }
             #[cfg(not(feature = "vector-qdrant"))]
-            { Err(DbError::Unsupported("vector-qdrant feature disabled".into())) }
+            {
+                Err(DbError::Unsupported(
+                    "vector-qdrant feature disabled".into(),
+                ))
+            }
         }
         VectorBackend::QdrantEdge => {
             #[cfg(feature = "vector-qdrant-edge")]
@@ -143,18 +167,28 @@ pub async fn build_vector_store(
                 Ok(Arc::new(store))
             }
             #[cfg(not(feature = "vector-qdrant-edge"))]
-            { Err(DbError::Unsupported("vector-qdrant-edge feature disabled".into())) }
+            {
+                Err(DbError::Unsupported(
+                    "vector-qdrant-edge feature disabled".into(),
+                ))
+            }
         }
         VectorBackend::LanceDb => {
             #[cfg(feature = "vector-lancedb")]
             {
-                let uri = cfg.url.as_deref().ok_or_else(||
-                    DbError::Config("lancedb uri is required".into()))?;
+                let uri = cfg
+                    .url
+                    .as_deref()
+                    .ok_or_else(|| DbError::Config("lancedb uri is required".into()))?;
                 let store = vector::lancedb_store::LanceDbVectorStore::open(uri).await?;
                 Ok(Arc::new(store))
             }
             #[cfg(not(feature = "vector-lancedb"))]
-            { Err(DbError::Unsupported("vector-lancedb feature disabled".into())) }
+            {
+                Err(DbError::Unsupported(
+                    "vector-lancedb feature disabled".into(),
+                ))
+            }
         }
     }
 }
